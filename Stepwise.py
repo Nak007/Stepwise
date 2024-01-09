@@ -7,10 +7,10 @@ versionadded:: 31-01-2024
 
 '''
 import pandas as pd, numpy as np
+from scipy import stats
 from sklearn.metrics import (r2_score, 
                              mean_squared_error, 
                              roc_auc_score)
-from scipy import stats
 
 __all__ = ["StepwiseRegression"]
 
@@ -139,16 +139,14 @@ class ANOVA(ValidateParams):
     ----------
     estimator : Estimator instance
         An estimator whether regressor or classifier with `fit` 
-        method that provides information about feature importance i.e. 
-        `coef_`. In addition to method, regressor and classifier must 
-        also provide `predict`, and `predict_proba`, respectively.
-
-    alpha : float, default=0.05
-        Passing criterion or p-value of two-tailed distribution.
+        method that accepts 3 positional arguments, which are `X`, 
+        `y`, and `sample_weight`. It must also provide information 
+        about feature importance i.e. `coef_` after fitting. In 
+        addition, regressor and classifier must provide methods, 
+        which are `predict(X)`, and `predict_proba(X)`, respectively.
 
     '''
-    
-    def __init__(self, estimator, alpha=0.05):
+    def __init__(self, estimator):
         
         # Validate estimator
         has_fit = hasattr(estimator, "fit")
@@ -159,25 +157,23 @@ class ANOVA(ValidateParams):
                              'are `fit`, and `predict` or `predict_proba`.')
         else: self.estimator = estimator
         
-        # Validate alpha [0.,1.]
-        self.alpha = self.Interval("alpha", alpha, float, 0, 1, "both")
-    
-    def __anova__(self, X, y, sample_weight=None):
+    def __anova__(self, X, y, sample_weight=None, alpha=0.05):
         
         '''Fit estimator and perform ANOVA'''
         y = np.array(y).flatten().copy()
-        model = self.estimator.fit(X, y, sample_weight)
+        try: model = self.estimator.fit(X, y, sample_weight)
+        except: model = self.estimator.fit(X, y)
         coefs = np.r_[model.intercept_, model.coef_.flatten()]
-        
+
         if hasattr(model, "predict_proba"):
             y_proba = model.predict_proba(X)[:,1]
-            return self.__logistic__(X, y, y_proba, coefs)
+            return self.__logistic__(X, y, y_proba, coefs, alpha)
         elif hasattr(model, "predict"):
             y_pred = model.predict(X).flatten()
-            return self.__linear__(X, y, y_pred, coefs)
+            return self.__linear__(X, y, y_pred, coefs, alpha)
         else: pass
     
-    def __linear__(self, X, y_true, y_pred, coefs):
+    def __linear__(self, X, y_true, y_pred, coefs, alpha=0.05):
         
         '''
         Peform analysis of variance on linear regression
@@ -194,22 +190,29 @@ class ANOVA(ValidateParams):
             Estimated target values.
             
         coefs : array of shape (intercept_ + n_features,)
-            Estimated coefficients for the linear regression problem. 
+            Estimated coefficients for the linear regression problem.
+        
+        alpha : float, default=0.05
+            Passing criterion or p-value of two-tailed distribution.
         
         Returns
         -------
         {"feature": list of features
-         "coef"   : estimated coefficients (intercept_ + n_features,)
+         "coef"   : estimated coefficients
          "stderr" : standard errors
          "t"      : t-statistics
-         "pvalue" : P-values (two-tailed distribution)
+         "pvalue" : P-values (two-tailed)
          "lower"  : lower bounds (alpha/2)
          "upper"  : upper bounds (1 - alpha/2)
+         "alpha"  : alpha
          "r2"     : R-Squared
          "adj_r2" : adjusted R-Squared
          "mse"    : Mean-Squared-Error}
          
         '''
+        # Validate alpha [0.,1.]
+        alpha = self.Interval("alpha", alpha, float, 0, 1, "both")
+        
         # Initialize parameters
         features = ["intercept"] + list(X)
         X = np.array(X).copy()
@@ -224,7 +227,7 @@ class ANOVA(ValidateParams):
         stderrs  = np.sqrt(mse*(np.linalg.inv(X.T.dot(X)).diagonal()))
         t_stats  = coefs / stderrs
         p_values = np.array([2*(1-stats.t.cdf(abs(t), df)) for t in t_stats])
-        t = stats.t.ppf(1-self.alpha/2, df) * np.abs(stderrs)
+        t = stats.t.ppf(1-alpha/2, df) * np.abs(stderrs)
         
         # Regression statistics
         r2 = r2_score(y_true, y_pred)
@@ -239,11 +242,12 @@ class ANOVA(ValidateParams):
                 "pvalue" : p_values, 
                 "lower"  : coefs - t, 
                 "upper"  : coefs + t, 
+                "alpha"  : alpha,
                 "r2"     : r2, 
                 "adj_r2" : adj_r2, 
                 "mse"    : mse}
     
-    def __logistic__(self, X, y_true, y_proba, coefs):
+    def __logistic__(self, X, y_true, y_proba, coefs, alpha=0.05):
         
         '''
         Peform analysis of variance on logistic regression
@@ -261,7 +265,10 @@ class ANOVA(ValidateParams):
             estimator.predict_proba(X, y)[:, 1].
             
         coefs : array of shape (intercept_ + n_features,)
-            Estimated coefficients for the logistic regression problem. 
+            Estimated coefficients for the logistic regression problem.
+            
+        alpha : float, default=0.05
+            Passing criterion or p-value of two-tailed distribution.
         
         Returns
         -------
@@ -269,9 +276,10 @@ class ANOVA(ValidateParams):
          "coef"   : estimated coefficients
          "stderr" : standard errors
          "t"      : t-statistics
-         "pvalue" : P-values (two-tailed distribution)
+         "pvalue" : P-values (two-tailed)
          "lower"  : lower bounds (alpha/2)
          "upper"  : upper bounds (1 - alpha/2)
+         "alpha"  : alpha
          "gini"   : GINI index
          "ks"     : adjusted R-Squared}
          
@@ -291,7 +299,7 @@ class ANOVA(ValidateParams):
         stderrs  = np.sqrt(np.linalg.inv(X.T.dot(W).dot(X)).diagonal())
         t_stats  = coefs / stderrs
         p_values = np.array([2*(1-stats.t.cdf(abs(t), df)) for t in t_stats])
-        t = stats.t.ppf(1-self.alpha/2, df) * np.abs(stderrs)
+        t = stats.t.ppf(1-alpha/2, df) * np.abs(stderrs)
         
         # Logistic regression statistics
         auc = roc_auc_score(y_true, y_proba)
@@ -305,6 +313,7 @@ class ANOVA(ValidateParams):
                 "pvalue" : p_values, 
                 "lower"  : coefs - t, 
                 "upper"  : coefs + t, 
+                "alpha"  : alpha,
                 "gini"   : 2*auc - 1, 
                 "ks"     : ks.statistic}
 
@@ -317,18 +326,34 @@ class StepwiseRegression(ANOVA, ValidateParams):
     ----------
     estimator : Estimator instance
         An estimator whether regressor or classifier with `fit` 
-        method that provides information about feature importance i.e. 
-        `coef_`. In addition to method, regressor and classifier must 
-        also provide `predict`, and `predict_proba`, respectively.
+        method that accepts 3 positional arguments, which are `X`, 
+        `y`, and `sample_weight`. It must also provide information 
+        about feature importance i.e. `coef_` after fitting. In 
+        addition, regressor and classifier must provide methods, 
+        which are `predict(X)`, and `predict_proba(X)`, respectively.
 
     method : {"backward", "forward", "stepwise"}, default="forward"
         - 'forward'  : forward selection
         - 'backward' : backward elimination
         - 'stepwise' : a combination of forward selection and backward
                        elimination
+    
+    add_features : {int, None}, default=1
+        Number of additional features to be retained during forward
+        selection. If None, it keeps adding until criterion is no 
+        longer satisfied. This is relevant when method is `stepwise`.
 
-    alpha : float, default=0.05
-        Passing criterion or p-value of two-tailed distribution.
+    fwd_alpha : float, default=0.05
+        Selecting criterion (two-tailed p-value) of `foward` selection.
+        This specifies significance level for feature to enter. This 
+        couble be greater than the usual 0.05 level so that it is not 
+        too difficult to enter features into the estimator. 
+
+    bwd_alpha : float, default=0.05
+        Removing criterion (two-tailed p-value) of `backward` 
+        elimination. This specifies significance level for feature to 
+        be removed. This could be greater than the usual 0.05 level so 
+        that it is not too easy to remove features from the estimator.
     
     Attributes
     ----------
@@ -337,29 +362,48 @@ class StepwiseRegression(ANOVA, ValidateParams):
     
     features : list of str
         List of selected features.
-    
-    results_ : dict of numpy (masked) ndarrays
+
+    results_ : dict
         It contains results from each step of selection/elimination.
+        In each key, it contains information as follows:
         
-        {"feature": list of features
-         "coef"   : estimated coefficients (intercept_ + n_features,)
-         "stderr" : standard errors
-         "t"      : t-statistics
-         "pvalue" : P-values (two-tailed distribution)
-         "lower"  : lower bounds (alpha/2)
-         "upper"  : upper bounds (1 - alpha/2)
-         "r2"     : R-Squared
-         "adj_r2" : adjusted R-Squared
-         "mse"    : Mean-Squared-Error}
-         "gini"   : GINI index
-         "ks"     : adjusted R-Squared}
+            "feature": list of features
+            "coef"   : estimated coefficients
+            "stderr" : standard errors
+            "t"      : t-statistics
+            "pvalue" : P-values (two-tailed)
+            "lower"  : lower bounds (alpha/2)
+            "upper"  : upper bounds (1 - alpha/2)
+            "alpha"  : alpha
+            "r2"     : R-Squared (1)
+            "adj_r2" : adjusted R-Squared (1)
+            "mse"    : Mean-Squared-Error (1)
+            "gini"   : GINI index (2)
+            "ks"     : adjusted R-Squared (2)
+            
+        Note: (1) when estimator is regressor
+              (2) when estimator is classifer
 
     '''
-    def __init__(self, estimator, method='forward', alpha=0.05):
+    def __init__(self, estimator, method='forward', add_features=1, 
+                 fwd_alpha=0.05, bwd_alpha=0.05):
         
-        args = ('method', method, ["forward", "backward", "stepwise"], str)
-        self.method = self.StrOptions(*args)
-        super().__init__(estimator, alpha)
+        # Validate method i.e. {"forward", "backward", "stepwise"}
+        args = (["forward", "backward", "stepwise"], str)
+        self.method = self.StrOptions('method', method, *args)
+        
+        # Validate alpha [0.,1.]
+        args = (float, 0, 1, "both")
+        self.fwd_alpha = self.Interval("fwd_alpha", fwd_alpha, *args)
+        self.bwd_alpha = self.Interval("bwd_alpha", bwd_alpha, *args)
+        
+        # Validate add_features
+        if add_features is not None:
+            args = ("add_features", add_features, int, 1, None, "left")
+            self.add_features = self.Interval(*args)
+        else: self.add_features = add_features
+            
+        super().__init__(estimator)
     
     def fit(self, X, y, sample_weight=None, n_features=None, use_features=None):
         
@@ -416,7 +460,8 @@ class StepwiseRegression(ANOVA, ValidateParams):
 
         # Fit estimator with final set of features
         args = (X[self.features], y, sample_weight)
-        self.estimator_ = self.estimator.fit(*args)
+        try: self.estimator_ = self.estimator.fit(*args)
+        except: self.estimator_ = self.estimator.fit(*args[:2])
         self.n_iters = len(self.results_)
         
         return self
@@ -424,9 +469,11 @@ class StepwiseRegression(ANOVA, ValidateParams):
     def __backward__(self, X, y, sample_weight=None, n_features=None):
         
         '''
-        Backward elimination removes features from the full estimator one
-        by one until no features overcome the threshold value i.e. greater
-        than defined p-value. Features never return once removed.
+        A backward-elimination removes features that is the least 
+        statistically significant from the full estimator one by one 
+        until all features remaining in the equation is statistically 
+        significant i.e. greater than defined p-value. Features never 
+        return once removed.
         
         Parameters
         ----------
@@ -452,33 +499,40 @@ class StepwiseRegression(ANOVA, ValidateParams):
         '''
         # Initialize parameters
         use_features = list(X)
-        if n_features is None: n_features = 1 
+        if n_features is None: n_features = 1
+        params = (y, sample_weight, self.bwd_alpha)
         
         # Validate parameters
         args = (int, 1, X.shape[1], "both")
         self.Interval("n_features", n_features, *args)
         
-        while len(use_features) >= n_features:
+        while len(use_features) > n_features:
             
             # Fit estimator and perform ANOVA
-            anova = self.__anova__(X[use_features].copy(), y, sample_weight)
+            anova = self.__anova__(X[use_features].copy(), *params)
             anova.update({"method" : "backward"})
             self.results_.update({len(self.results_) : anova})
             
             # Determine variable with maximum p-value
             # index >= 1 (ignore intercept)
             k = np.argmax(anova["pvalue"][1:]) 
-            if anova["pvalue"][1:][k] < self.alpha: break
-            else: use_features.remove(use_features[k])
-
+            if anova["pvalue"][1:][k] >= self.bwd_alpha: 
+                use_features.remove(use_features[k])
+                anova = self.__anova__(X[use_features].copy(), *params)
+                anova.update({"method" : "backward"})
+                self.results_.update({len(self.results_)-1 : anova})
+            else: break
+        
         return use_features
     
     def __forward__(self, X, y, sample_weight=None, n_features=None, use_features=None):
         
         '''
-        Forward selection adds features one by one to an empty estimator
-        until no features overcome the threshold value i.e. less than or
-        equal to defined p-value. Features never leave once added.
+        A forward-selection adds features one by one, based on which 
+        feature is the most statistically significant, to an empty 
+        estimator unitl there are no remaining statistically significant
+        features i.e. less than or equal to defined p-value. Features 
+        never leave once added.
         
         Parameters
         ----------
@@ -523,7 +577,7 @@ class StepwiseRegression(ANOVA, ValidateParams):
                 
                 # Fit estimator and perform ANOVA
                 X0 = X[use_features + [new_feature]].copy()
-                anova  = self.__anova__(X0, y, sample_weight)
+                anova  = self.__anova__(X0, y, sample_weight, self.fwd_alpha)
                 pvalue = anova["pvalue"][-1]
                 
                 # Find next best feature
@@ -533,7 +587,8 @@ class StepwiseRegression(ANOVA, ValidateParams):
                     best_stderrs = anova
                 
             # Determine variable with minimum p-value
-            if min_pvalue <= self.alpha:
+            # Enter the best feature in when there is no feature
+            if (min_pvalue <= self.fwd_alpha) | (len(use_features)==0):
                 use_features.append(best_feature)
                 features.remove(best_feature)
                 best_stderrs.update({"method" : "forward"})
@@ -572,8 +627,14 @@ class StepwiseRegression(ANOVA, ValidateParams):
         '''
         use_features, base_features = list(), [None]
         while set(base_features)!=set(use_features):
+            
+            if self.add_features is not None:
+                add_features = len(use_features) + self.add_features
+                add_features = int(np.fmin(add_features, X.shape[1]))
+            else: add_features = None
+            
             base_features = use_features.copy()
-            args = (X, y, sample_weight, len(use_features)+1, use_features)
+            args = (X, y, sample_weight, add_features, use_features)
             use_features = self.__forward__(*args)
             use_features = self.__backward__(X[use_features], y, sample_weight)
 

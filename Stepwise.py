@@ -8,6 +8,7 @@ versionadded:: 31-01-2024
 '''
 import pandas as pd, numpy as np
 from scipy import stats
+from warnings import warn
 from sklearn.metrics import (r2_score, 
                              mean_squared_error, 
                              roc_auc_score)
@@ -220,7 +221,8 @@ class ANOVA(ValidateParams):
 
         # Degree of freedom and MSE
         N,K = X.shape
-        df  = N - K - 1
+        df = N - K - 1
+        if df<=0: df = N + df
         mse = (sum((y_true-y_pred)**2)) / df
         
         # Standard error, t-stat, and p-values
@@ -231,9 +233,8 @@ class ANOVA(ValidateParams):
         
         # Regression statistics
         r2 = r2_score(y_true, y_pred)
-        factor = ((1-r2) * ((N-1)/(N-K-1)))
-        adj_r2 = r2 - (1-r2) * factor
-        mse = (sum((y_true-y_pred)**2)) / (N-K-1)
+        adj_r2 = r2 - (1-r2) * ((N-1) / df)
+        mse = (sum((y_true-y_pred)**2)) / df
 
         return {"feature": features,
                 "coef"   : coefs,
@@ -291,8 +292,9 @@ class ANOVA(ValidateParams):
         
         # Degree of freedom and MSE
         N,K = X.shape
-        df  = N - K - 1
-        
+        df = N - K - 1
+        if df<=0: df = N + df
+            
         # Standard error, t-stat, and p-values
         V = (y_proba * (1-y_proba)).reshape(-1,1)
         W = np.identity(len(y_proba)) * V
@@ -462,6 +464,13 @@ class StepwiseRegression(ANOVA, ValidateParams):
         args = (X[self.features], y, sample_weight)
         try: self.estimator_ = self.estimator.fit(*args)
         except: self.estimator_ = self.estimator.fit(*args[:2])
+        
+        if len(X) <= len(self.features):
+            warn(f"There are more parameters ({len(self.features):,d}) " 
+                 f"in the estimator than observations ({len(X):,d})."
+                 f"This can lead to overfitting. Reducing number of "
+                 f"parameters or applying regularization techniques, "
+                 "can prevent such problem.", Warning)
         self.n_iters = len(self.results_)
         
         return self
